@@ -10,6 +10,67 @@ from quant import *
 from datetime import datetime, timedelta
 
 
+from gptqmodel.utils. importer import hf_select_quant_linear
+from gptqmodel.quantization.config import QuantizeConfig, FORMAT
+
+
+def pack_model(model, quantizers, bits=4, group_size=64):
+    QuantLinear = hf_select_quant_linear(
+        bits=bits,
+        group_size=group_size,
+        desc_act=False,
+        sym=False,
+        checkpoint_format="safetensors",
+        device_map="cuda"
+    )
+
+    def replace_module(model, target_name, new_module):
+        name_parts = target_name.split('.')
+        parent = model
+        for part in name_parts[:-1]:
+            parent = parent._modules[part]
+        attr = name_parts[-1]
+        parent._modules[attr] = new_module
+
+
+    for name, layer in model.named_modules():
+        if name not in quantizers.keys():
+            continue
+        if isinstance(layer, nn.Linear):
+            # quantizers[name]
+            quant_linear = QuantLinear(
+                in_features=layer.in_features,
+                out_features=layer.out_features,
+                bias=(layer.bias is not None),
+                bits=bits,
+                group_size=group_size,
+                desc_act=False,
+                sym=False
+            )
+
+            weight = layer.weight.data.clone()
+            weight = weight.cuda()
+            out_features, in_features = weight.shape
+
+            weight_grouped = weight.reshape(out_features * (in_features//group_size), group_size)
+            q = torch.clamp(torch.round(weight_grouped / quantizers[name].scale.reshape(-1, 1))+ quantizers[name].zero.reshape(-1, 1), 0, quantizers[name].maxq)    
+            fake_quant_weight = quantizers[name].scale.reshape(-1, 1) * (q - quantizers[name].zero.reshape(-1, 1))
+            fake_quant_weight = fake_quant_weight.reshape(out_features, in_features)
+            fake_quant_layer = nn.Linear(in_features=in_features, out_features=out_features, bias=False)
+            fake_quant_layer.weight.data = fake_quant_weight
+            quant_linear.pack(fake_quant_layer.cpu(), quantizers[name].scale.cpu(), quantizers[name].zero.cpu())
+            quant_linear.post_init()
+            replace_module(model, name, quant_linear)
+            
+            del weight 
+
+    for quantized_module_name, quantized_module in model.named_modules():
+        if hasattr(quantized_module, "qweight"): # QuantLinear layer
+            quantized_module.wf_unsqueeze_zero = quantized_module.wf_unsqueeze_zero.cuda()
+            quantized_module.wf_unsqueeze_neg_one = quantized_module.wf_unsqueeze_neg_one.cuda()
+    return model
+
+
 def get_llama(model):
     import torch
     def skip(*args, **kwargs):
@@ -340,6 +401,29 @@ if __name__ == '__main__':
         quantizers = llama_sequential(model, dataloader, DEV)
         print(time.time() - tick)
 
+    # datasets = ['wikitext2', 'c4'] 
+    # if args.new_eval:
+    #     datasets = ['wikitext2', 'c4-new']
+    # for dataset in datasets:
+    #     dataloader, testloader = get_loaders(
+    #         dataset, seed=args.seed, model=args.model, seqlen=model.seqlen
+    #     )
+    #     print(dataset)
+    #     llama_eval(model, testloader, DEV)
+
+
+    if args.save:
+        pack_model(model, quantizers, bits=args.wbits, group_size=args.groupsize)
+        import pdb; pdb.set_trace()
+        gptq_config = QuantizeConfig(
+            bits=args.wbits,
+            group_size=args.groupsize,
+            sym=args.sym,
+            format=FORMAT.GPTQ_V2,
+        ) 
+        model.config.quantization_config = gptq_config
+        model.save_pretrained(args.save)
+
     datasets = ['wikitext2', 'c4'] 
     if args.new_eval:
         datasets = ['wikitext2', 'c4-new']
@@ -350,7 +434,5 @@ if __name__ == '__main__':
         print(dataset)
         llama_eval(model, testloader, DEV)
 
-    if args.save:
-        llama_pack3(model, quantizers)
-        torch.save(model.state_dict(), args.save)
+
 

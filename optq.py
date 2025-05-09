@@ -243,6 +243,11 @@ class GPTQ:
             Q = Q.t()
         self.layer.weight.data = Q_CD.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype)
 
+        # Added by seojune; for groupwise quantization
+        if static_groups:
+            self.quantizer.scale = torch.cat([quant.scale for quant in groups], dim=1)
+            self.quantizer.zero = torch.cat([quant.zero for quant in groups], dim=1)
+
         if DEBUG:
             print(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
 
