@@ -407,20 +407,19 @@ if __name__ == '__main__':
         quantizers = llama_sequential(model, dataloader, DEV)
         print(time.time() - tick)
 
-    # datasets = ['wikitext2', 'c4'] 
-    # if args.new_eval:
-    #     datasets = ['wikitext2', 'c4-new']
-    # for dataset in datasets:
-    #     dataloader, testloader = get_loaders(
-    #         dataset, seed=args.seed, model=args.model, seqlen=model.seqlen
-    #     )
-    #     print(dataset)
-    #     llama_eval(model, testloader, DEV)
+    datasets = ['wikitext2', 'c4'] 
+    if args.new_eval:
+        datasets = ['wikitext2', 'c4-new']
+    for dataset in datasets:
+        dataloader, testloader = get_loaders(
+            dataset, seed=args.seed, model=args.model, seqlen=model.seqlen
+        )
+        print(dataset)
+        llama_eval(model, testloader, DEV)
 
 
     if args.save:
         pack_model(model, quantizers, bits=args.wbits, group_size=args.groupsize)
-        import pdb; pdb.set_trace()
         gptq_config = QuantizeConfig(
             bits=args.wbits,
             group_size=args.groupsize,
